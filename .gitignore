@@ -10,3 +10,4 @@ app.db
 
 # User specific
 .vs/
+appsettings.Development.json

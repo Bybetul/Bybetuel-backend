@@ -3,10 +3,9 @@ using System.Security.Claims;
 using System.Text;
 using backend.Models;
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.IdentityModel.Tokens;
-using Microsoft.AspNetCore.Http;
 
 namespace backend.Controllers;
 
@@ -18,10 +17,7 @@ public class AuthController : ControllerBase
     private readonly IConfiguration _cfg;
     private readonly IPasswordHasher<AppUser> _hasher;
 
-    public AuthController(
-        AppDbContext db,
-        IConfiguration cfg,
-        IPasswordHasher<AppUser> hasher)
+    public AuthController(AppDbContext db, IConfiguration cfg, IPasswordHasher<AppUser> hasher)
     {
         _db = db;
         _cfg = cfg;
@@ -30,70 +26,108 @@ public class AuthController : ControllerBase
 
     public record LoginDto(string Email, string Password);
 
+    // ✅ POST /api/auth/login
     [HttpPost("login")]
-    public IActionResult Login(LoginDto dto)
+    public IActionResult Login([FromBody] LoginDto dto)
     {
-        var email = dto.Email.Trim().ToLower();
+        if (dto is null) return BadRequest();
+
+        var email = (dto.Email ?? "").Trim().ToLower();
+        var password = dto.Password ?? "";
+
+        if (string.IsNullOrWhiteSpace(email) || string.IsNullOrWhiteSpace(password))
+            return Unauthorized();
+
         var user = _db.Users.FirstOrDefault(u => u.Email.ToLower() == email);
         if (user == null) return Unauthorized();
 
-        var result = _hasher.VerifyHashedPassword(user, user.PasswordHash, dto.Password);
-        if (result == PasswordVerificationResult.Failed)
-            return Unauthorized();
+        var result = _hasher.VerifyHashedPassword(user, user.PasswordHash, password);
+        if (result == PasswordVerificationResult.Failed) return Unauthorized();
 
-        var key = new SymmetricSecurityKey(
-            Encoding.UTF8.GetBytes(_cfg["Jwt:Key"]!)
-        );
+        // JWT settings
+        var jwtKey = _cfg["Jwt:Key"] ?? "";
+        if (jwtKey.Length < 32)
+            return StatusCode(500, "JWT Key must be at least 32 characters.");
 
-        var claims = new[]
+        var issuer = _cfg["Jwt:Issuer"];
+        var audience = _cfg["Jwt:Audience"];
+
+        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey));
+        var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+
+        var claims = new List<Claim>
         {
-            new Claim(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
-            new Claim(JwtRegisteredClaimNames.Email, user.Email),
-            new Claim("isAdmin", user.IsAdmin ? "true" : "false")
+            new(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
+            new(JwtRegisteredClaimNames.Email, user.Email),
+            new("isAdmin", user.IsAdmin ? "true" : "false")
         };
 
+        // optional role
+        if (user.IsAdmin)
+            claims.Add(new Claim(ClaimTypes.Role, "Admin"));
+
         var token = new JwtSecurityToken(
-            issuer: _cfg["Jwt:Issuer"],
-            audience: _cfg["Jwt:Audience"],
+            issuer: issuer,
+            audience: audience,
             claims: claims,
             expires: DateTime.UtcNow.AddHours(12),
-            signingCredentials: new SigningCredentials(key, SecurityAlgorithms.HmacSha256)
+            signingCredentials: creds
         );
 
         var jwt = new JwtSecurityTokenHandler().WriteToken(token);
 
+        // ✅ Cookie Flags final (online wichtig)
+        var isProd = string.Equals(
+            Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT"),
+            "Production",
+            StringComparison.OrdinalIgnoreCase
+        );
+
         Response.Cookies.Append("access_token", jwt, new CookieOptions
         {
             HttpOnly = true,
-            Secure = false, // lokal false
-            SameSite = SameSiteMode.Lax,
+            Secure = isProd, // Prod: true (https) / Local: false
+            SameSite = isProd ? SameSiteMode.None : SameSiteMode.Lax, // ✅ ONLINE MUSS None SEIN
             Path = "/",
             Expires = DateTimeOffset.UtcNow.AddHours(12)
         });
 
-        return Ok(new { ok = true });
+        // ✅ zusätzlich Token zurückgeben (damit LocalStorage optional auch geht)
+        return Ok(new { ok = true, token = jwt, isAdmin = user.IsAdmin, email = user.Email });
     }
 
+    // ✅ GET /api/auth/me
     [Authorize]
     [HttpGet("me")]
     public IActionResult Me()
     {
-        return Ok(new
-        {
-            email = User.FindFirstValue(JwtRegisteredClaimNames.Email),
-            isAdmin = User.FindFirstValue("isAdmin") == "true"
-        });
+        var email =
+            User.FindFirstValue(JwtRegisteredClaimNames.Email)
+            ?? User.FindFirstValue(ClaimTypes.Email);
+
+        var isAdmin = (User.FindFirstValue("isAdmin") ?? "false") == "true";
+
+        return Ok(new { email, isAdmin });
     }
 
+    // ✅ POST /api/auth/logout
     [HttpPost("logout")]
     public IActionResult Logout()
     {
+        var isProd = string.Equals(
+            Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT"),
+            "Production",
+            StringComparison.OrdinalIgnoreCase
+        );
+
+        // ✅ Delete muss gleiche Flags haben!
         Response.Cookies.Delete("access_token", new CookieOptions
         {
             Path = "/",
-            SameSite = SameSiteMode.Lax
+            Secure = isProd,
+            SameSite = isProd ? SameSiteMode.None : SameSiteMode.Lax
         });
 
-        return Ok();
+        return Ok(new { ok = true });
     }
 }

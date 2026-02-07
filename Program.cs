@@ -5,88 +5,74 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using Microsoft.OpenApi.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// ============================
-// Controllers + Swagger
-// ============================
+//
+// =========================
+// Controllers
+// =========================
 builder.Services.AddControllers();
-builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
 
-// ============================
+//
+// =========================
 // Database (SQLite)
-// ============================
+// =========================
 builder.Services.AddDbContext<AppDbContext>(opt =>
     opt.UseSqlite(builder.Configuration.GetConnectionString("Default"))
 );
 
-// ============================
+//
+// =========================
 // Password Hasher
-// ============================
+// =========================
 builder.Services.AddScoped<IPasswordHasher<AppUser>, PasswordHasher<AppUser>>();
 
-// ============================
-// JWT Settings
-// ============================
+//
+// =========================
+// JWT CONFIG
+// =========================
 var jwtIssuer = builder.Configuration["Jwt:Issuer"];
 var jwtAudience = builder.Configuration["Jwt:Audience"];
 var jwtKey = builder.Configuration["Jwt:Key"];
 
 if (string.IsNullOrWhiteSpace(jwtKey) || jwtKey.Length < 32)
-    throw new Exception("Jwt:Key muss mindestens 32 Zeichen lang sein!");
+    throw new Exception("Jwt:Key muss mindestens 32 Zeichen lang sein");
 
 var jwtKeyBytes = Encoding.UTF8.GetBytes(jwtKey);
 
-// ============================
-// Auth
-// ============================
 builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(options =>
+    .AddJwtBearer(opt =>
     {
-        options.TokenValidationParameters = new TokenValidationParameters
+        opt.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
             ValidateAudience = true,
-            ValidateIssuerSigningKey = true,
             ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
             ValidIssuer = jwtIssuer,
             ValidAudience = jwtAudience,
             IssuerSigningKey = new SymmetricSecurityKey(jwtKeyBytes),
             ClockSkew = TimeSpan.Zero
         };
 
-        // ✅ Token aus Header ODER Cookie holen
-        options.Events = new JwtBearerEvents
+        opt.Events = new JwtBearerEvents
         {
             OnMessageReceived = ctx =>
             {
-                // 1) Authorization Header
-                var authHeader = ctx.Request.Headers["Authorization"].ToString();
-                if (!string.IsNullOrWhiteSpace(authHeader) && authHeader.StartsWith("Bearer "))
+                var auth = ctx.Request.Headers["Authorization"].FirstOrDefault();
+                if (!string.IsNullOrEmpty(auth) && auth.StartsWith("Bearer "))
                 {
-                    var token = authHeader["Bearer ".Length..].Trim();
-                    if (!string.IsNullOrWhiteSpace(token) && token != "undefined" && token != "null")
-                    {
-                        ctx.Token = token;
-                        return Task.CompletedTask;
-                    }
+                    ctx.Token = auth.Substring("Bearer ".Length);
                 }
 
-                // 2) Cookie fallback
-                if (ctx.Request.Cookies.TryGetValue("access_token", out var cookieToken))
+                if (ctx.Request.Cookies.TryGetValue("access_token", out var cookie))
                 {
-                    if (!string.IsNullOrWhiteSpace(cookieToken))
-                        ctx.Token = cookieToken;
+                    ctx.Token = cookie;
                 }
 
-                return Task.CompletedTask;
-            },
-            OnAuthenticationFailed = ctx =>
-            {
-                Console.WriteLine("JWT FAILED: " + ctx.Exception.Message);
                 return Task.CompletedTask;
             }
         };
@@ -94,38 +80,82 @@ builder.Services
 
 builder.Services.AddAuthorization();
 
-// ============================
-// CORS (Frontend darf API + Cookies)
-// ============================
+//
+// =========================
+// CORS
+// =========================
 builder.Services.AddCors(opt =>
 {
-    opt.AddPolicy("AllowFrontend", policy =>
+    opt.AddPolicy("AllowFrontend", p =>
     {
-        policy
-            .WithOrigins(
-                "http://localhost:3000",
-                "http://localhost:5173",
-                "https://bybetuel.de",
-                "https://www.bybetuel.de"
-            )
-            .AllowAnyHeader()
-            .AllowAnyMethod()
-            .AllowCredentials();
+        p.WithOrigins(
+            "http://localhost:3000",
+            "http://localhost:5173",
+            "https://bybetuel.de",
+            "https://www.bybetuel.de"
+        )
+        .AllowAnyHeader()
+        .AllowAnyMethod()
+        .AllowCredentials();
     });
 });
 
+//
+// =========================
+// 🔥 SWAGGER MIT JWT (DAS FEHLTE)
+// =========================
+builder.Services.AddSwaggerGen(c =>
+{
+    c.SwaggerDoc("v1", new OpenApiInfo
+    {
+        Title = "backend",
+        Version = "v1"
+    });
+
+    c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+    {
+        Name = "Authorization",
+        Type = SecuritySchemeType.Http,
+        Scheme = "bearer",
+        BearerFormat = "JWT",
+        In = ParameterLocation.Header,
+        Description = "JWT Authorization Header: Bearer {token}"
+    });
+
+    c.AddSecurityRequirement(new OpenApiSecurityRequirement
+    {
+        {
+            new OpenApiSecurityScheme
+            {
+                Reference = new OpenApiReference
+                {
+                    Type = ReferenceType.SecurityScheme,
+                    Id = "Bearer"
+                }
+            },
+            Array.Empty<string>()
+        }
+    });
+});
+
+//
+// =========================
+// BUILD
+// =========================
 var app = builder.Build();
 
-// ============================
-// ✅ RAILWAY PORT FIX (WICHTIG)
-// ============================
+//
+// =========================
+// RAILWAY PORT FIX
+// =========================
 var port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
 app.Urls.Clear();
 app.Urls.Add($"http://0.0.0.0:{port}");
 
-// ============================
-// ✅ DB + Admin Seed (BLEIBT)
-// ============================
+//
+// =========================
+// DB + ADMIN SEED
+// =========================
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -135,40 +165,36 @@ using (var scope = app.Services.CreateScope())
     var adminEmail = builder.Configuration["Admin:Email"];
     var adminPassword = builder.Configuration["Admin:Password"];
 
-    if (!string.IsNullOrWhiteSpace(adminEmail) && !string.IsNullOrWhiteSpace(adminPassword))
+    if (!string.IsNullOrWhiteSpace(adminEmail) &&
+        !string.IsNullOrWhiteSpace(adminPassword) &&
+        !db.Users.Any(u => u.Email == adminEmail))
     {
-        if (!db.Users.Any(u => u.Email == adminEmail))
+        var admin = new AppUser
         {
-            var admin = new AppUser
-            {
-                Email = adminEmail,
-                IsAdmin = true
-            };
+            Email = adminEmail,
+            IsAdmin = true
+        };
 
-            admin.PasswordHash = hasher.HashPassword(admin, adminPassword);
-            db.Users.Add(admin);
-            db.SaveChanges();
+        admin.PasswordHash = hasher.HashPassword(admin, adminPassword);
+        db.Users.Add(admin);
+        db.SaveChanges();
 
-            Console.WriteLine($"✅ Admin seeded: {adminEmail}");
-        }
+        Console.WriteLine($"✅ Admin seeded: {adminEmail}");
     }
 }
 
-// ============================
-// ✅ Swagger IMMER (auch online)
-// ============================
+//
+// =========================
+// MIDDLEWARE
+// =========================
 app.UseSwagger();
 app.UseSwaggerUI(c =>
 {
     c.SwaggerEndpoint("/swagger/v1/swagger.json", "API v1");
-    c.RoutePrefix = "swagger"; // URL: /swagger
+    c.RoutePrefix = "swagger";
 });
 
-// ============================
-// Middleware Reihenfolge (WICHTIG)
-// ============================
 app.UseCors("AllowFrontend");
-
 app.UseAuthentication();
 app.UseAuthorization();
 

@@ -10,35 +10,38 @@ using Microsoft.OpenApi.Models;
 var builder = WebApplication.CreateBuilder(args);
 
 //
-// =========================
-// Controllers
-// =========================
+// ================================
+// CONTROLLERS
+// ================================
 builder.Services.AddControllers();
 
 //
-// =========================
-// Database (SQLite)
-// =========================
+// ================================
+// DATABASE (SQLite)
+// ================================
 builder.Services.AddDbContext<AppDbContext>(opt =>
-    opt.UseSqlite(builder.Configuration.GetConnectionString("Default"))
-);
+{
+    opt.UseSqlite(builder.Configuration.GetConnectionString("Default"));
+});
 
 //
-// =========================
-// Password Hasher
-// =========================
+// ================================
+// PASSWORD HASHER
+// ================================
 builder.Services.AddScoped<IPasswordHasher<AppUser>, PasswordHasher<AppUser>>();
 
 //
-// =========================
+// ================================
 // JWT CONFIG
-// =========================
+// ================================
 var jwtIssuer = builder.Configuration["Jwt:Issuer"];
 var jwtAudience = builder.Configuration["Jwt:Audience"];
 var jwtKey = builder.Configuration["Jwt:Key"];
 
 if (string.IsNullOrWhiteSpace(jwtKey) || jwtKey.Length < 32)
+{
     throw new Exception("Jwt:Key muss mindestens 32 Zeichen lang sein");
+}
 
 var jwtKeyBytes = Encoding.UTF8.GetBytes(jwtKey);
 
@@ -52,12 +55,15 @@ builder.Services
             ValidateAudience = true,
             ValidateLifetime = true,
             ValidateIssuerSigningKey = true,
+
             ValidIssuer = jwtIssuer,
             ValidAudience = jwtAudience,
             IssuerSigningKey = new SymmetricSecurityKey(jwtKeyBytes),
+
             ClockSkew = TimeSpan.Zero
         };
 
+        // Token aus Header ODER Cookie lesen
         opt.Events = new JwtBearerEvents
         {
             OnMessageReceived = ctx =>
@@ -81,9 +87,9 @@ builder.Services
 builder.Services.AddAuthorization();
 
 //
-// =========================
+// ================================
 // CORS
-// =========================
+// ================================
 builder.Services.AddCors(opt =>
 {
     opt.AddPolicy("AllowFrontend", p =>
@@ -92,7 +98,8 @@ builder.Services.AddCors(opt =>
             "http://localhost:3000",
             "http://localhost:5173",
             "https://bybetuel.de",
-            "https://www.bybetuel.de"
+            "https://www.bybetuel.de",
+            "https://bybetuel-backend-production.up.railway.app"
         )
         .AllowAnyHeader()
         .AllowAnyMethod()
@@ -101,9 +108,9 @@ builder.Services.AddCors(opt =>
 });
 
 //
-// =========================
-// 🔥 SWAGGER MIT JWT (DAS FEHLTE)
-// =========================
+// ================================
+// SWAGGER + JWT SUPPORT
+// ================================
 builder.Services.AddSwaggerGen(c =>
 {
     c.SwaggerDoc("v1", new OpenApiInfo
@@ -139,23 +146,23 @@ builder.Services.AddSwaggerGen(c =>
 });
 
 //
-// =========================
+// ================================
 // BUILD
-// =========================
+// ================================
 var app = builder.Build();
 
 //
-// =========================
-// RAILWAY PORT FIX
-// =========================
+// ================================
+// RAILWAY PORT FIX (WICHTIG)
+// ================================
 var port = Environment.GetEnvironmentVariable("PORT") ?? "8080";
 app.Urls.Clear();
 app.Urls.Add($"http://0.0.0.0:{port}");
 
 //
-// =========================
+// ================================
 // DB + ADMIN SEED
-// =========================
+// ================================
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -184,9 +191,9 @@ using (var scope = app.Services.CreateScope())
 }
 
 //
-// =========================
+// ================================
 // MIDDLEWARE
-// =========================
+// ================================
 app.UseSwagger();
 app.UseSwaggerUI(c =>
 {

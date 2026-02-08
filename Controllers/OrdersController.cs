@@ -18,6 +18,9 @@ namespace backend.Controllers
         }
 
         // DTO für Create
+        [HttpGet("version")]
+public IActionResult Version() => Ok("orders-post-version-1");
+
         public record CreateOrderDto(string ProductId, decimal Price);
 
         // GET /api/orders
